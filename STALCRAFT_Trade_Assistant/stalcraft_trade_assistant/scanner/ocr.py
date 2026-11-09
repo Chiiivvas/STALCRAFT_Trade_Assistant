@@ -19,7 +19,7 @@ def _read_variant(image, psm):
         lang="rus+eng",
         config=f"--oem 1 --psm {psm}",
         output_type=Output.DICT,
-        timeout=5
+        timeout=6
     )
     words = []
     for i, raw_text in enumerate(data["text"]):
@@ -31,8 +31,7 @@ def _read_variant(image, psm):
         except (ValueError, TypeError):
             confidence = -1
 
-        # Keep weak-confidence tokens too: the small x / х before a stack
-        # count is often assigned a low confidence by Tesseract.
+        # Keep low-confidence tokens: small x/х and thin digits are often weak.
         if confidence < 0:
             continue
 
@@ -41,8 +40,8 @@ def _read_variant(image, psm):
             "confidence": confidence,
             "x": round(data["left"][i] / OCR_SCALE),
             "y": round(data["top"][i] / OCR_SCALE),
-            "width": round(data["width"][i] / OCR_SCALE),
-            "height": round(data["height"][i] / OCR_SCALE),
+            "width": max(1, round(data["width"][i] / OCR_SCALE)),
+            "height": max(1, round(data["height"][i] / OCR_SCALE)),
             "line": (
                 data["block_num"][i],
                 data["par_num"][i],
@@ -59,8 +58,54 @@ def _quality_score(words):
     confidence = sum(max(0, word["confidence"]) for word in words) / len(words)
     has_stack = bool(re.search(r"(?i)[xх×]\s*\d{1,6}", text))
     cyrillic_count = len(re.findall(r"[а-яА-ЯёЁ]", text))
-    # Favor variants that actually preserve item names and xN stack counts.
     return len(words) * 1.5 + confidence / 20 + cyrillic_count * 0.15 + (20 if has_stack else 0)
+
+
+def _intersection_over_union(a, b):
+    left = max(a["x"], b["x"])
+    top = max(a["y"], b["y"])
+    right = min(a["x"] + a["width"], b["x"] + b["width"])
+    bottom = min(a["y"] + a["height"], b["y"] + b["height"])
+    intersection = max(0, right - left) * max(0, bottom - top)
+    area_a = a["width"] * a["height"]
+    area_b = b["width"] * b["height"]
+    union = area_a + area_b - intersection
+    return intersection / union if union else 0.0
+
+
+def _merge_variant_words(all_words):
+    """Fuse detections at the same screen position without discarding unique rows."""
+    merged = []
+    for word in sorted(all_words, key=lambda item: item["confidence"], reverse=True):
+        duplicate_index = None
+        for index, existing in enumerate(merged):
+            same_position = (
+                abs((word["x"] + word["width"] / 2) -
+                    (existing["x"] + existing["width"] / 2)) <=
+                max(5, min(word["width"], existing["width"]) * 0.45)
+                and abs((word["y"] + word["height"] / 2) -
+                        (existing["y"] + existing["height"] / 2)) <=
+                max(4, min(word["height"], existing["height"]) * 0.55)
+            )
+            if same_position or _intersection_over_union(word, existing) >= 0.35:
+                duplicate_index = index
+                break
+        if duplicate_index is None:
+            merged.append(word)
+        else:
+            existing = merged[duplicate_index]
+            # Prefer the higher-confidence token, but retain the larger box.
+            if word["confidence"] > existing["confidence"]:
+                merged[duplicate_index] = {
+                    **word,
+                    "x": min(word["x"], existing["x"]),
+                    "y": min(word["y"], existing["y"]),
+                    "width": max(word["x"] + word["width"], existing["x"] + existing["width"]) -
+                             min(word["x"], existing["x"]),
+                    "height": max(word["y"] + word["height"], existing["y"] + existing["height"]) -
+                              min(word["y"], existing["y"])
+                }
+    return sorted(merged, key=lambda item: (item["y"], item["x"]))
 
 
 def recognize_text(image):
@@ -78,24 +123,20 @@ def recognize_text(image):
     )[1]
     inverted = cv2.bitwise_not(binary)
 
-    # Sidebar rows are sparse, so PSM 11 complements the regular block mode.
-    # Try both polarities because the game panel may use light or dark text.
+    # Sparse-text modes help preserve individual sidebar rows when the list
+    # contains many items; raw grayscale adds a less destructive alternative.
     variants = [
-        (binary, 6),
-        (binary, 11),
-        (inverted, 6),
-        (inverted, 11)
+        (gray, 6), (gray, 11), (gray, 12),
+        (binary, 6), (binary, 11), (binary, 12),
+        (inverted, 6), (inverted, 11), (inverted, 12)
     ]
-    best_words = []
-    best_score = -1
+    all_words = []
     for processed, psm in variants:
         try:
-            words = _read_variant(processed, psm)
+            all_words.extend(_read_variant(processed, psm))
         except Exception:
+            # A failed preprocessing/mode must not discard detections from
+            # the other OCR passes.
             continue
-        score = _quality_score(words)
-        if score > best_score:
-            best_words = words
-            best_score = score
 
-    return best_words
+    return _merge_variant_words(all_words)
