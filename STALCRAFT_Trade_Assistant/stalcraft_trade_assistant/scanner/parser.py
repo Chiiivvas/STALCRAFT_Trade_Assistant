@@ -20,7 +20,14 @@ def group_words_into_lines(words):
 
 
 def normalize_text(value):
-    value = value.lower().replace("ё", "е")
+    # Tesseract sometimes reads visually identical Cyrillic letters as Latin.
+    # Canonicalize those look-alikes before comparing with the Russian price list.
+    homoglyphs = str.maketrans({
+        "a": "а", "c": "с", "e": "е", "o": "о", "p": "р",
+        "x": "х", "y": "у", "k": "к", "m": "м", "t": "т",
+        "b": "в", "h": "н"
+    })
+    value = value.lower().replace("ё", "е").translate(homoglyphs)
     value = re.sub(r"[^а-яa-z0-9]+", " ", value)
     return " ".join(value.split())
 
