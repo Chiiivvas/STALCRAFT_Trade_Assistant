@@ -6,6 +6,9 @@ import numpy as np
 import mss
 from PIL import Image
 import pytesseract
+from scanner.capture import capture_region
+from scanner.ocr import recognize_text
+from scanner.parser import group_words_into_lines, parse_offer_lines
 
 from PySide6.QtCore import Qt, QRect, QPoint, QTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
@@ -356,53 +359,50 @@ class MainWindow(QWidget):
         region = self.config.get("region")
         if not region:
             return
+
         try:
-            x,y,w,h = region
-            with mss.mss() as sct:
-                shot = np.array(sct.grab({"left":x,"top":y,"width":w,"height":h}))
-            frame = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
-            found = []
-            for path in TEMPLATES.glob("*.png"):
-                name = path.stem.replace("_"," ")
-                templ = cv2.imread(str(path))
-                if templ is None or templ.shape[0] >= frame.shape[0] or templ.shape[1] >= frame.shape[1]:
-                    continue
-                res = cv2.matchTemplate(frame, templ, cv2.TM_CCOEFF_NORMED)
-                ys, xs = np.where(res >= 0.88)
-                boxes = []
-                for xx, yy in zip(xs, ys):
-                    if all(abs(xx-bx)>templ.shape[1]*0.55 or abs(yy-by)>templ.shape[0]*0.55 for bx,by in boxes):
-                        boxes.append((xx,yy))
-                for xx, yy in boxes:
-                    # Quantity is usually rendered near the upper-right corner of an item slot.
-                    qx = min(frame.shape[1]-1, xx + templ.shape[1] - 3)
-                    qy = max(0, yy - 8)
-                    crop = frame[max(0,qy-3):min(frame.shape[0],yy+24), max(0,qx-34):min(frame.shape[1],qx+8)]
-                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.size else crop
-                    text = pytesseract.image_to_string(gray, config="--psm 7 -c tessedit_char_whitelist=0123456789x")
-                    digits = re.sub(r"\D","",text)
-                    qty = int(digits) if digits else 1
-                    found.append((name, qty, int(self.prices.get(name,0))))
-            # Collapse duplicate detections and keep one line per item type.
-            totals = {}
-            for name, qty, price in found:
-                totals[name] = totals.get(name, 0) + qty
-            self.last_results = [(n,q,int(self.prices.get(n,0))) for n,q in totals.items()]
+            frame = capture_region(region)
+            words = recognize_text(frame)
+            lines = group_words_into_lines(words)
+
+            # Обрабатываем только область ниже надписи «Вы получите»,
+            # чтобы не учитывать предметы, которые предлагает сам пользователь.
+            found = parse_offer_lines(lines, list(self.prices.keys()))
+
+            self.last_results = []
             self.results.setRowCount(0)
             grand = 0
-            for name, qty, price in self.last_results:
-                r = self.results.rowCount()
-                self.results.insertRow(r)
+
+            for name, qty in found.items():
+                price = int(self.prices.get(name, 0))
                 amount = qty * price
                 grand += amount
-                vals = [name, str(qty), f"{price:,}".replace(","," "), f"{amount:,}".replace(","," ")]
-                for c,v in enumerate(vals):
-                    self.results.setItem(r,c,QTableWidgetItem(v))
-            self.total.setText(f"{grand:,}".replace(","," ") + " ₽")
-            self.status.setText(f"Найдено: {len(self.last_results)}")
+                self.last_results.append((name, qty, price))
+
+                row = self.results.rowCount()
+                self.results.insertRow(row)
+                values = [
+                    name,
+                    str(qty),
+                    f"{price:,}".replace(",", " "),
+                    f"{amount:,}".replace(",", " ")
+                ]
+                for col, value in enumerate(values):
+                    self.results.setItem(row, col, QTableWidgetItem(value))
+
+            self.total.setText(f"{grand:,}".replace(",", " ") + " ₽")
+            if found:
+                self.status.setText(f"OCR: найдено {len(found)}")
+                self.hint.setText("Считываются предметы ниже строки «Вы получите». Проверь сумму перед сделкой.")
+            elif not lines:
+                self.status.setText("OCR: 0")
+                self.hint.setText("Текст не распознан. Проверь Tesseract и выбранную область.")
+            else:
+                self.status.setText("OCR: 0")
+                self.hint.setText("Предметы не найдены. Область должна включать надпись «Вы получите» и нижнюю сетку.")
         except Exception as e:
-            self.status.setText("Ошибка сканирования")
-            self.hint.setText(f"Ошибка: {e}")
+            self.status.setText("Ошибка OCR")
+            self.hint.setText(f"Ошибка OCR: {e}")
 
     def copy_total(self):
         QApplication.clipboard().setText(str(sum(q*p for _,q,p in self.last_results)))
