@@ -39,6 +39,10 @@ def _match_price_name(candidate, normalized_names):
     normalized_candidate = normalize_text(candidate)
     if not normalized_candidate:
         return None
+    # Exact normalized matches first; then contained names.
+    for normalized_name, original_name in normalized_names:
+        if normalized_name == normalized_candidate:
+            return original_name
     for normalized_name, original_name in sorted(
         normalized_names, key=lambda pair: len(pair[0]), reverse=True
     ):
@@ -54,7 +58,7 @@ def _match_price_name(candidate, normalized_names):
         if score > best_score:
             best_score = score
             best_name = original_name
-    return best_name if best_score >= 0.84 else None
+    return best_name if best_score >= 0.90 else None
 
 
 def parse_offer_lines(lines, price_names):
