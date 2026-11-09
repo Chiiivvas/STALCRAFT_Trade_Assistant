@@ -246,6 +246,9 @@ class MainWindow(QWidget):
         controls.addWidget(self.region_btn)
         controls.addWidget(self.pause_btn)
         root.addLayout(controls)
+        self.trade_region_btn = QPushButton("Выбрать область трейда (правая)")
+        self.trade_region_btn.clicked.connect(self.select_trade_region)
+        root.addWidget(self.trade_region_btn)
 
         self.results = QTableWidget(0, 4)
         self.results.setHorizontalHeaderLabels(["Предмет", "Кол.", "Цена", "Сумма"])
