@@ -169,30 +169,40 @@ class ItemDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+def normalize_name_for_compare(value):
+    return re.sub(r"[^а-яa-z0-9]+", "", str(value).lower().replace("ё", "е"))
+
+
 class OCRScanThread(QThread):
     completed = Signal(object)
 
-    def __init__(self, region, price_names, parent=None):
+    def __init__(self, region, trade_region, price_names, parent=None):
         super().__init__(parent)
         self.region = list(region)
+        self.trade_region = list(trade_region) if trade_region else None
         self.price_names = list(price_names)
+
+    def _scan_one(self, region):
+        frame = capture_region(region)
+        words = recognize_text(frame)
+        lines = group_words_into_lines(words)
+        return {
+            "found": parse_sidebar_offer_lines(lines, self.price_names),
+            "line_count": len(lines),
+            "word_count": len(words),
+            "ocr_text": "\\n".join(line["text"] for line in lines),
+            "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+            "region": region
+        }
 
     def run(self):
         try:
-            frame = capture_region(self.region)
-            words = recognize_text(frame)
-            lines = group_words_into_lines(words)
-            found = parse_sidebar_offer_lines(lines, self.price_names)
-            self.completed.emit({
-                "found": found,
-                "line_count": len(lines),
-                "word_count": len(words),
-                "ocr_text": "\n".join(line["text"] for line in lines),
-                "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
-                "region": self.region
-            })
+            left = self._scan_one(self.region)
+            right = self._scan_one(self.trade_region) if self.trade_region else None
+            self.completed.emit({"left": left, "right": right})
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
+
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -202,7 +212,7 @@ class MainWindow(QWidget):
         self.setMinimumSize(310, 260)
         self.resize(340, 310)
         self.prices = load_json(PRICES_FILE, {})
-        self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
+        self.config = load_json(CONFIG_FILE, {"region": None, "trade_region": None, "scan_interval": 1.2})
         self.last_results = []
         self.empty_anchor_scans = 0
         self.scan_thread = None
@@ -384,6 +394,24 @@ class MainWindow(QWidget):
     def show_region_selector(self):
         self.region_selector = RegionSelector(self.set_region)
 
+    def select_trade_region(self):
+        self.hide()
+        QTimer.singleShot(350, self.show_trade_region_selector)
+
+    def show_trade_region_selector(self):
+        self.region_selector = RegionSelector(self.set_trade_region)
+
+    def set_trade_region(self, region):
+        self.config["trade_region"] = region
+        save_json(CONFIG_FILE, self.config)
+        self.show()
+        self.status.setText("Правая область трейда сохранена")
+        self.hint.setText(
+            "Правая область сохранена. Теперь программа сверяет названия "
+            "с левой областью, а количество берёт из правой области трейда."
+        )
+        self.scan()
+
     def set_region(self, region):
         self.config["region"] = region
         save_json(CONFIG_FILE, self.config)
@@ -446,7 +474,7 @@ class MainWindow(QWidget):
         if self.scan_thread is not None and self.scan_thread.isRunning():
             return
 
-        self.scan_thread = OCRScanThread(region, list(self.prices.keys()), self)
+        trade_region = self.config.get("trade_region")\n        self.scan_thread = OCRScanThread(region, trade_region, list(self.prices.keys()), self)
         self.scan_thread.completed.connect(self.apply_scan_result)
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
@@ -480,14 +508,42 @@ class MainWindow(QWidget):
             )
             return
 
-        found = result.get("found", {})
+        left = result.get("left", {})
+        right = result.get("right")
+        left_found = left.get("found", {})
+        right_found = right.get("found", {}) if right else {}
+
+        # Right trade area is authoritative for offered quantities. The left
+        # list verifies names only; its quantities are never added a second time.
+        if right is not None and right_found:
+            found = {}
+            for right_name, qty in right_found.items():
+                verified_name = right_name
+                for left_name in left_found:
+                    if normalize_name_for_compare(left_name) == normalize_name_for_compare(right_name):
+                        verified_name = left_name
+                        break
+                found[verified_name] = qty
+            active = right
+            compare_note = (
+                f"Сверка: слева {len(left_found)} поз., в трейде {len(right_found)} поз.; "
+                "количество взято из правой области без сложения дублей. "
+            )
+        else:
+            found = left_found
+            active = left
+            compare_note = (
+                "Правая область не распознана или пуста — временно использую левый список. "
+                if right is not None else "Правая область трейда ещё не выбрана. "
+            )
+
         raw_text = " | ".join(
-            part.strip() for part in result.get("ocr_text", "").splitlines()
+            part.strip() for part in active.get("ocr_text", "").splitlines()
             if part.strip()
         )
         raw_preview = raw_text[:650] if raw_text else "текст не распознан"
-        frame_size = result.get("frame_size", ["?", "?"])
-        region = result.get("region", self.config.get("region", []))
+        frame_size = active.get("frame_size", ["?", "?"])
+        region = active.get("region", self.config.get("region", []))
         diagnostic = (
             f"Захват {frame_size[0]}×{frame_size[1]} px; "
             f"слов OCR: {result.get('word_count', 0)}; область: {region}. "
@@ -506,7 +562,7 @@ class MainWindow(QWidget):
                 )
             else:
                 self.hint.setText(
-                    diagnostic + "Список распознан. Сумма рассчитана по количеству "
+                    diagnostic + compare_note + "Список распознан. Сумма рассчитана по количеству "
                     "из левой панели и ценам из прайс-листа. "
                     f"OCR: {raw_preview}"
                 )
