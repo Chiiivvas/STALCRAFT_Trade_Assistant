@@ -94,8 +94,9 @@ def parse_offer_lines(lines, price_names):
         totals[display_name] = totals.get(display_name, 0) + quantity
     return totals
 
+
 def _sidebar_visual_rows(lines):
-    """Rebuild rows from OCR word coordinates, ignoring Tesseract block IDs."""
+    """Group merged OCR tokens into visual rows and repair split stack digits."""
     words = [
         word
         for line in lines
@@ -105,29 +106,63 @@ def _sidebar_visual_rows(lines):
     if not words:
         return [line.get("text", "") for line in lines]
 
-    words.sort(key=lambda word: (word["y"] + word.get("height", 0) / 2, word["x"]))
+    heights = sorted(max(1, word.get("height", 1)) for word in words)
+    median_height = heights[len(heights) // 2]
+    row_tolerance = max(5, median_height * 0.72)
+    words.sort(key=lambda word: (
+        word["y"] + word.get("height", 0) / 2, word["x"]
+    ))
+
     rows = []
     for word in words:
         center_y = word["y"] + word.get("height", 0) / 2
-        height = max(1, word.get("height", 1))
-        if rows:
-            previous = rows[-1]
-            avg_y = sum(item["y"] + item.get("height", 0) / 2 for item in previous) / len(previous)
-            avg_h = sum(max(1, item.get("height", 1)) for item in previous) / len(previous)
-            tolerance = max(4, min(height, avg_h) * 0.7)
-            if abs(center_y - avg_y) <= tolerance:
-                previous.append(word)
-                continue
-        rows.append([word])
+        best_row = None
+        best_distance = None
+        for row in rows[-3:]:
+            row_center = sum(
+                item["y"] + item.get("height", 0) / 2 for item in row
+            ) / len(row)
+            distance = abs(center_y - row_center)
+            if distance <= row_tolerance and (
+                best_distance is None or distance < best_distance
+            ):
+                best_row, best_distance = row, distance
+        if best_row is None:
+            rows.append([word])
+        else:
+            best_row.append(word)
 
-    return [
-        " ".join(word["text"] for word in sorted(row, key=lambda item: item["x"]))
-        for row in rows
-    ]
+    rendered = []
+    for row in rows:
+        row.sort(key=lambda item: item["x"])
+        tokens = []
+        for word in row:
+            token = word["text"].strip()
+            if not token:
+                continue
+            if tokens:
+                previous = tokens[-1]
+                prev_right = previous["x"] + previous["width"]
+                gap = word["x"] - prev_right
+                # Tesseract occasionally splits a stack count into e.g. "13" + "4".
+                if (previous["text"].isdigit() and token.isdigit()
+                        and gap <= max(8, median_height * 0.55)):
+                    previous["text"] += token
+                    previous["width"] = (
+                        word["x"] + word.get("width", 1) - previous["x"]
+                    )
+                    continue
+            tokens.append({
+                "text": token,
+                "x": word["x"],
+                "width": word.get("width", 1)
+            })
+        rendered.append(" ".join(token["text"] for token in tokens))
+    return rendered
 
 
 def parse_sidebar_offer_lines(lines, price_names):
-    """Parse every complete sidebar row containing an item name and xN count."""
+    """Parse each sidebar item row independently, preserving unpriced names."""
     normalized_names = [
         (normalize_text(name), name)
         for name in price_names if normalize_text(name)
@@ -135,7 +170,6 @@ def parse_sidebar_offer_lines(lines, price_names):
     totals = {}
 
     for text in _sidebar_visual_rows(lines):
-        # OCR sometimes leaves punctuation between x and the quantity.
         text = text.replace("Х", "х").replace("X", "x")
         quantity_match = _QUANTITY_RE.search(text)
         if not quantity_match:
