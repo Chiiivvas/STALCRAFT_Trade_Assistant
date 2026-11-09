@@ -176,15 +176,16 @@ def normalize_name_for_compare(value):
 class OCRScanThread(QThread):
     completed = Signal(object)
 
-    def __init__(self, region, trade_region, price_names, parent=None):
+    def __init__(self, region, trade_region, price_names, verify_left=True, parent=None):
         super().__init__(parent)
         self.region = list(region)
         self.trade_region = list(trade_region) if trade_region else None
         self.price_names = list(price_names)
+        self.verify_left = verify_left
 
-    def _scan_one(self, region):
+    def _scan_one(self, region, fast=False):
         frame = capture_region(region)
-        words = recognize_text(frame)
+        words = recognize_text(frame, fast=fast)
         lines = group_words_into_lines(words)
         return {
             "found": parse_sidebar_offer_lines(lines, self.price_names),
@@ -197,7 +198,7 @@ class OCRScanThread(QThread):
 
     def run(self):
         try:
-            left = self._scan_one(self.region)
+            left = self._scan_one(self.region, fast=True) if self.verify_left else None
             right = self._scan_one(self.trade_region) if self.trade_region else None
             self.completed.emit({"left": left, "right": right})
         except Exception as exc:
@@ -216,6 +217,8 @@ class MainWindow(QWidget):
         self.last_results = []
         self.empty_anchor_scans = 0
         self.scan_thread = None
+        self.scan_counter = 0
+        self.last_left_verification = {}
         self.build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.scan)
@@ -478,7 +481,14 @@ class MainWindow(QWidget):
             return
 
         trade_region = self.config.get("trade_region")
-        self.scan_thread = OCRScanThread(region, trade_region, list(self.prices.keys()), self)
+        self.scan_counter += 1
+        # Verify the left list occasionally; the right trade panel remains
+        # the fast, authoritative source on every scan.
+        verify_left = (not self.last_left_verification or self.scan_counter % 8 == 1)
+        self.scan_thread = OCRScanThread(
+            region, trade_region, list(self.prices.keys()),
+            verify_left=verify_left, parent=self
+        )
         self.scan_thread.completed.connect(self.apply_scan_result)
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
@@ -512,8 +522,11 @@ class MainWindow(QWidget):
             )
             return
 
-        left = result.get("left", {})
+        left = result.get("left")
         right = result.get("right")
+        if left is not None:
+            self.last_left_verification = left
+        left = left or self.last_left_verification or {}
         left_found = left.get("found", {})
         right_found = right.get("found", {}) if right else {}
 
