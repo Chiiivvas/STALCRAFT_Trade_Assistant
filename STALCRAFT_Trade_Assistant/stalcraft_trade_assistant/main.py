@@ -59,7 +59,7 @@ class RegionSelector(QWidget):
             p.drawRect(r)
         p.setPen(Qt.white)
         p.setFont(QFont("Segoe UI", 14))
-        p.drawText(30, 45, "Выдели левый список предметов с количеством xN. ESC — отмена.")
+        p.drawText(30, 45, "Выдели нужную область окна трейда. ESC — отмена.")
 
     def mousePressEvent(self, e):
         self.origin = e.position().toPoint()
@@ -515,7 +515,7 @@ class MainWindow(QWidget):
 
         # Right trade area is authoritative for offered quantities. The left
         # list verifies names only; its quantities are never added a second time.
-        if right is not None and right_found:
+        if right is not None and right.get("word_count", 0) > 0:
             found = {}
             for right_name, qty in right_found.items():
                 verified_name = right_name
@@ -533,7 +533,7 @@ class MainWindow(QWidget):
             found = left_found
             active = left
             compare_note = (
-                "Правая область не распознана или пуста — временно использую левый список. "
+                "Правая область не прочиталась — временно использую левый список. "
                 if right is not None else "Правая область трейда ещё не выбрана. "
             )
 
@@ -546,7 +546,7 @@ class MainWindow(QWidget):
         region = active.get("region", self.config.get("region", []))
         diagnostic = (
             f"Захват {frame_size[0]}×{frame_size[1]} px; "
-            f"слов OCR: {result.get('word_count', 0)}; область: {region}. "
+            f"слов OCR: {active.get('word_count', 0)}; область: {region}. "
         )
 
         if found:
@@ -563,7 +563,7 @@ class MainWindow(QWidget):
             else:
                 self.hint.setText(
                     diagnostic + compare_note + "Список распознан. Сумма рассчитана по количеству "
-                    "из левой панели и ценам из прайс-листа. "
+                    "из правой области трейда и ценам из прайс-листа. "
                     f"OCR: {raw_preview}"
                 )
             return
