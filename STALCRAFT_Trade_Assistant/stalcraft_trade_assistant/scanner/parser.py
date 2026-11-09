@@ -1,7 +1,7 @@
 import re
 from difflib import SequenceMatcher
 
-_QUANTITY_RE = re.compile(r"(?i)[xх×]\s*(\d{1,6})")
+_QUANTITY_RE = re.compile(r"(?i)[xх×]\s*[:=.,-]?\s*(\d{1,6})")
 
 
 def group_words_into_lines(words):
@@ -94,16 +94,49 @@ def parse_offer_lines(lines, price_names):
         totals[display_name] = totals.get(display_name, 0) + quantity
     return totals
 
+def _sidebar_visual_rows(lines):
+    """Rebuild rows from OCR word coordinates, ignoring Tesseract block IDs."""
+    words = [
+        word
+        for line in lines
+        for word in line.get("words", [])
+        if word.get("text", "").strip()
+    ]
+    if not words:
+        return [line.get("text", "") for line in lines]
+
+    words.sort(key=lambda word: (word["y"] + word.get("height", 0) / 2, word["x"]))
+    rows = []
+    for word in words:
+        center_y = word["y"] + word.get("height", 0) / 2
+        height = max(1, word.get("height", 1))
+        if rows:
+            previous = rows[-1]
+            avg_y = sum(item["y"] + item.get("height", 0) / 2 for item in previous) / len(previous)
+            avg_h = sum(max(1, item.get("height", 1)) for item in previous) / len(previous)
+            tolerance = max(4, min(height, avg_h) * 0.7)
+            if abs(center_y - avg_y) <= tolerance:
+                previous.append(word)
+                continue
+        rows.append([word])
+
+    return [
+        " ".join(word["text"] for word in sorted(row, key=lambda item: item["x"]))
+        for row in rows
+    ]
+
+
 def parse_sidebar_offer_lines(lines, price_names):
-    """Parse every explicit 'item name x quantity' row in the full trade sidebar."""
+    """Parse every complete sidebar row containing an item name and xN count."""
     normalized_names = [
         (normalize_text(name), name)
         for name in price_names if normalize_text(name)
     ]
     totals = {}
 
-    for line in lines:
-        text = line.get("text", "")
+    for text in _sidebar_visual_rows(lines):
+        # OCR sometimes leaves punctuation between x and the quantity.
+        text = text.replace("Х", "х").replace("X", "x")
         quantity_match = _QUANTITY_RE.search(text)
         if not quantity_match:
             continue
@@ -123,4 +156,3 @@ def parse_sidebar_offer_lines(lines, price_names):
         totals[display_name] = totals.get(display_name, 0) + quantity
 
     return totals
-
