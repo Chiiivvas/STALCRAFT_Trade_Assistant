@@ -236,12 +236,7 @@ class MainWindow(QWidget):
         self.price_table.setMaximumHeight(150)
         root.addWidget(self.price_table)
 
-        bottom = QHBoxLayout()
-        sample_btn = QPushButton("Добавить образец иконки")
-        sample_btn.clicked.connect(self.add_template)
-        bottom.addWidget(sample_btn)
-        root.addLayout(bottom)
-        self.hint = QLabel("Добавь прайс и образцы иконок. Сканирование работает по выбранной области.")
+        self.hint = QLabel("Добавь предметы и цены в прайс-лист. OCR считывает нижнюю часть окна обмена.")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color:#999;font-size:10px;")
         root.addWidget(self.hint)
