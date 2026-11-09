@@ -126,7 +126,7 @@ def recognize_text(image, fast=False):
     # Use all complementary passes for stronger recognition of item names
     # and stack denominations. Accuracy takes priority over scan speed here.
     variants = (
-        [(gray, 6)] if fast else [
+        [(gray, 6), (binary, 6)] if fast else [
             (gray, 6), (gray, 11),
             (binary, 6), (binary, 11),
             (inverted, 11)
