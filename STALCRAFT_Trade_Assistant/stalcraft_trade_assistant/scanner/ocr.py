@@ -126,9 +126,9 @@ def recognize_text(image):
     # Sparse-text modes help preserve individual sidebar rows when the list
     # contains many items; raw grayscale adds a less destructive alternative.
     variants = [
-        (gray, 6), (gray, 11), (gray, 12),
-        (binary, 6), (binary, 11), (binary, 12),
-        (inverted, 6), (inverted, 11), (inverted, 12)
+        (gray, 6), (gray, 11),
+        (binary, 6), (binary, 11),
+        (inverted, 11)
     ]
     all_words = []
     for processed, psm in variants:
