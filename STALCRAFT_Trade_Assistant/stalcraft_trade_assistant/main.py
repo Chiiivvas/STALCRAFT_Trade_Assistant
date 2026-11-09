@@ -187,7 +187,7 @@ class OCRScanThread(QThread):
                 "found": found,
                 "line_count": len(lines),
                 "word_count": len(words),
-                "ocr_text": "\\n".join(line["text"] for line in lines),
+                "ocr_text": "\n".join(line["text"] for line in lines),
                 "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
                 "region": self.region
             })
