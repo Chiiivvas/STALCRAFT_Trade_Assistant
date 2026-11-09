@@ -190,7 +190,7 @@ class MainWindow(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.scan)
         # Poll frequently; skip a tick while the previous OCR job is running.
-        self.timer.start(500)
+        self.timer.start(300)
         self.refresh_price_table()
 
     def build_ui(self):
@@ -337,7 +337,7 @@ class MainWindow(QWidget):
             self.pause_btn.setText("Продолжить")
             self.status.setText("Пауза")
         else:
-            self.timer.start(1200)
+            self.timer.start(300)
             self.pause_btn.setText("Пауза")
             self.status.setText("Сканирование")
 
@@ -381,9 +381,14 @@ class MainWindow(QWidget):
 
         self.scan_thread = OCRScanThread(region, list(self.prices.keys()), self)
         self.scan_thread.completed.connect(self.apply_scan_result)
+        self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
         self.scan_thread.start()
         self.status.setText("Сканирование...")
+
+    def on_scan_finished(self):
+        # Clear the Python reference before the finished QThread is deleted.
+        self.scan_thread = None
 
     def apply_scan_result(self, result):
         if "error" in result:
