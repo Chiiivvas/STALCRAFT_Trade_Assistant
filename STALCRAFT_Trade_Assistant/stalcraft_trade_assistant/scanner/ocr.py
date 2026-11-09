@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytesseract
 from pytesseract import Output
 
