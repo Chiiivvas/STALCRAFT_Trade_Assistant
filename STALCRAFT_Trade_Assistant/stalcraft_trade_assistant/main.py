@@ -199,7 +199,8 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("STALCRAFT Trade Assistant")
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(390)
+        self.setMinimumSize(360, 420)
+        self.resize(390, 450)
         self.prices = load_json(PRICES_FILE, {})
         self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
         self.last_results = []
@@ -238,19 +239,19 @@ class MainWindow(QWidget):
         self.results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1,4):
             self.results.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        self.results.setMaximumHeight(190)
+        self.results.setMaximumHeight(140)
         root.addWidget(self.results)
 
         totalrow = QHBoxLayout()
         totalrow.addWidget(QLabel("ИТОГО:"))
         self.total = QLabel("0 ₽")
-        self.total.setStyleSheet("font-size:23px;font-weight:800;color:#59d995;")
+        self.total.setStyleSheet("font-size:18px;font-weight:800;color:#59d995;")
         totalrow.addStretch()
         totalrow.addWidget(self.total)
         root.addLayout(totalrow)
 
         self.copy_btn = QPushButton("⧉  СКОПИРОВАТЬ СУММУ")
-        self.copy_btn.setMinimumHeight(42)
+        self.copy_btn.setMinimumHeight(34)
         self.copy_btn.setStyleSheet("background:#237b51;color:white;font-weight:700;padding:8px;border-radius:5px;")
         self.copy_btn.clicked.connect(self.copy_total)
         root.addWidget(self.copy_btn)
@@ -272,7 +273,7 @@ class MainWindow(QWidget):
         self.price_table.setHorizontalHeaderLabels(["Предмет", "Цена за шт."])
         self.price_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.price_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.price_table.setMaximumHeight(150)
+        self.price_table.setMaximumHeight(105)
         root.addWidget(self.price_table)
 
         self.hint = QLabel("Добавь цены в прайс-лист и выдели левый список, где видны все строки предметов с количеством xN.")
@@ -280,7 +281,7 @@ class MainWindow(QWidget):
         self.hint.setStyleSheet("color:#999;font-size:10px;")
         root.addWidget(self.hint)
         self.setStyleSheet("""
-            QWidget { background:#202328; color:#eeeeee; font-family:'Segoe UI'; }
+            QWidget { background:#202328; color:#eeeeee; font-family:'Segoe UI'; font-size:9pt; }
             QTableWidget { background:#17191d; gridline-color:#41454b; }
             QPushButton { background:#343941; border:1px solid #555b64; padding:6px; border-radius:4px; }
             QPushButton:hover { background:#454d57; }
