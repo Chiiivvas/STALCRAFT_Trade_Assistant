@@ -204,6 +204,10 @@ class MainWindow(QWidget):
         self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
         self.last_results = []
         self.empty_anchor_scans = 0
+        # Require repeated OCR agreement before changing a displayed quantity.
+        self.stable_quantities = {}
+        self.pending_quantities = {}
+        self.missing_item_scans = {}
         self.scan_thread = None
         self.build_ui()
         self.timer = QTimer(self)
@@ -432,6 +436,63 @@ class MainWindow(QWidget):
                 self.results.setItem(row, col, QTableWidgetItem(value))
         self.total.setText(f"{grand:,}".replace(",", " ") + " ₽")
 
+    def _stabilize_results(self, found):
+        """Ignore one-frame quantity glitches and brief missed detections."""
+        confirmed = {}
+        names = set(self.stable_quantities) | set(found)
+
+        for name in names:
+            if name not in found:
+                self.missing_item_scans[name] = self.missing_item_scans.get(name, 0) + 1
+                self.pending_quantities.pop(name, None)
+                # Keep the last confirmed row through short OCR dropouts.
+                if self.missing_item_scans[name] < 4 and name in self.stable_quantities:
+                    confirmed[name] = self.stable_quantities[name]
+                else:
+                    self.stable_quantities.pop(name, None)
+                    self.missing_item_scans.pop(name, None)
+                continue
+
+            quantity = int(found[name])
+            self.missing_item_scans.pop(name, None)
+            previous = self.stable_quantities.get(name)
+
+            if previous is None:
+                pending = self.pending_quantities.get(name)
+                if pending and pending[0] == quantity:
+                    hits = pending[1] + 1
+                else:
+                    hits = 1
+                self.pending_quantities[name] = (quantity, hits)
+                if hits >= 2:
+                    self.stable_quantities[name] = quantity
+                    self.pending_quantities.pop(name, None)
+                    confirmed[name] = quantity
+                continue
+
+            if quantity == previous:
+                self.pending_quantities.pop(name, None)
+                confirmed[name] = previous
+                continue
+
+            pending = self.pending_quantities.get(name)
+            if pending and pending[0] == quantity:
+                hits = pending[1] + 1
+            else:
+                hits = 1
+            self.pending_quantities[name] = (quantity, hits)
+
+            # A single OCR frame with a different number cannot overwrite
+            # the last confirmed value (e.g. 225 briefly misread as 885).
+            if hits >= 2:
+                self.stable_quantities[name] = quantity
+                self.pending_quantities.pop(name, None)
+                confirmed[name] = quantity
+            else:
+                confirmed[name] = previous
+
+        return confirmed
+
     def apply_scan_result(self, result):
         if "error" in result:
             self.hint.setText(
@@ -454,6 +515,14 @@ class MainWindow(QWidget):
 
         if found:
             self.empty_anchor_scans = 0
+            found = self._stabilize_results(found)
+            if not found:
+                self.status.setText("Проверка количества…")
+                self.hint.setText(
+                    diagnostic + "Подтверждаю распознанные количества по повторным кадрам. "
+                    f"OCR: {raw_preview}"
+                )
+                return
             self._render_results(found)
             self.status.setText(f"Найдено предметов: {len(found)}")
             unpriced = [name for name, qty, price in self.last_results if price == 0]
@@ -475,6 +544,9 @@ class MainWindow(QWidget):
         # Several consecutive empty frames are required to avoid clearing on one bad read.
         self.empty_anchor_scans += 1
         if self.empty_anchor_scans >= 5:
+            self.stable_quantities.clear()
+            self.pending_quantities.clear()
+            self.missing_item_scans.clear()
             self._render_results({})
             self.status.setText("Список не распознан")
         else:
