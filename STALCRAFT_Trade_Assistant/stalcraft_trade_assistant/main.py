@@ -74,7 +74,18 @@ class RegionSelector(QWidget):
         self.current = e.position().toPoint()
         r = QRect(self.origin, self.current).normalized()
         if r.width() > 30 and r.height() > 30:
-            self.callback([r.x(), r.y(), r.width(), r.height()])
+            # Qt reports logical pixels; MSS captures physical desktop pixels.
+            # Convert here so Windows display scaling (125% / 150%) does not
+            # shift the capture to a neighboring part of the game window.
+            top_left = self.mapToGlobal(r.topLeft())
+            dpr = float(self.devicePixelRatioF())
+            physical_region = [
+                round(top_left.x() * dpr),
+                round(top_left.y() * dpr),
+                round(r.width() * dpr),
+                round(r.height() * dpr)
+            ]
+            self.callback(physical_region)
         self.close()
 
     def keyPressEvent(self, e):
@@ -174,7 +185,11 @@ class OCRScanThread(QThread):
             found = parse_sidebar_offer_lines(lines, self.price_names)
             self.completed.emit({
                 "found": found,
-                "line_count": len(lines)
+                "line_count": len(lines),
+                "word_count": len(words),
+                "ocr_text": "\\n".join(line["text"] for line in lines),
+                "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+                "region": self.region
             })
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
@@ -334,10 +349,11 @@ class MainWindow(QWidget):
         self.empty_anchor_scans = 0
         self._render_results({})
         self.show()
+        x, y, width, height = region
         self.status.setText("Мониторинг левого списка")
         self.hint.setText(
-            "Считываются строки вида «Название предмета x количество». "
-            "Для расчёта суммы используется цена за штуку из твоего прайс-листа."
+            f"Область сохранена: x={x}, y={y}, ширина={width}, высота={height}. "
+            "Сейчас проверяю, какой текст OCR видит в этой области."
         )
         self.scan()
 
@@ -424,6 +440,18 @@ class MainWindow(QWidget):
             return
 
         found = result.get("found", {})
+        raw_text = " | ".join(
+            part.strip() for part in result.get("ocr_text", "").splitlines()
+            if part.strip()
+        )
+        raw_preview = raw_text[:220] if raw_text else "текст не распознан"
+        frame_size = result.get("frame_size", ["?", "?"])
+        region = result.get("region", self.config.get("region", []))
+        diagnostic = (
+            f"Захват {frame_size[0]}×{frame_size[1]} px; "
+            f"слов OCR: {result.get('word_count', 0)}; область: {region}. "
+        )
+
         if found:
             self.empty_anchor_scans = 0
             self._render_results(found)
@@ -431,13 +459,15 @@ class MainWindow(QWidget):
             unpriced = [name for name, qty, price in self.last_results if price == 0]
             if unpriced:
                 self.hint.setText(
-                    "Нет цены в прайс-листе: " + ", ".join(unpriced) +
-                    ". Добавь цену за штуку, чтобы учесть эти предметы в сумме."
+                    diagnostic + "Нет цены в прайс-листе: " + ", ".join(unpriced) +
+                    ". Добавь цену за штуку, чтобы учесть эти предметы в сумме. "
+                    f"OCR: {raw_preview}"
                 )
             else:
                 self.hint.setText(
-                    "Список распознан. Сумма рассчитана по количеству из левой панели "
-                    "и ценам из прайс-листа."
+                    diagnostic + "Список распознан. Сумма рассчитана по количеству "
+                    "из левой панели и ценам из прайс-листа. "
+                    f"OCR: {raw_preview}"
                 )
             return
 
@@ -446,17 +476,15 @@ class MainWindow(QWidget):
         self.empty_anchor_scans += 1
         if self.empty_anchor_scans >= 5:
             self._render_results({})
-            self.status.setText("Список пуст")
-            self.hint.setText(
-                "В пяти последовательных кадрах строки с количеством xN не найдены. "
-                "Сумма и предыдущий список очищены."
-            )
+            self.status.setText("Список не распознан")
         else:
-            self.status.setText("Проверка списка…")
-            self.hint.setText(
-                f"Строки предметов пока не распознаны ({self.empty_anchor_scans}/5). "
-                "Предыдущая сумма сохранена до подтверждения пустого списка."
-            )
+            self.status.setText("Проверка левого списка…")
+
+        self.hint.setText(
+            diagnostic +
+            f"Строки с xN не найдены ({min(self.empty_anchor_scans, 5)}/5). "
+            f"Что OCR прочитал: {raw_preview}"
+        )
 
     def copy_total(self):
         QApplication.clipboard().setText(str(sum(q*p for _,q,p in self.last_results)))
