@@ -484,7 +484,7 @@ class MainWindow(QWidget):
         self.scan_counter += 1
         # Verify the left list occasionally; the right trade panel remains
         # the fast, authoritative source on every scan.
-        verify_left = (not self.last_left_verification or self.scan_counter % 8 == 1)
+        verify_left = (not trade_region or not self.last_left_verification or self.scan_counter % 8 == 1)
         self.scan_thread = OCRScanThread(
             region, trade_region, list(self.prices.keys()),
             verify_left=verify_left, parent=self
