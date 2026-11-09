@@ -137,7 +137,7 @@ def recognize_text(image):
             continue
 
     fast_text = " ".join(word["text"] for word in all_words)
-    has_quantity = bool(re.search(r"(?i)[xх×]\\s*\\d{1,6}", fast_text))
+    has_quantity = bool(re.search(r"(?i)[xх×]\s*\\d{1,6}", fast_text))
     if len(all_words) < 4 or not has_quantity:
         for processed, psm in fallback_variants:
             try:
