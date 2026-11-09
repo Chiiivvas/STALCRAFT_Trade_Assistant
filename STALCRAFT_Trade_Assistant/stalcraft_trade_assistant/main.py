@@ -444,7 +444,7 @@ class MainWindow(QWidget):
             part.strip() for part in result.get("ocr_text", "").splitlines()
             if part.strip()
         )
-        raw_preview = raw_text[:220] if raw_text else "текст не распознан"
+        raw_preview = raw_text[:650] if raw_text else "текст не распознан"
         frame_size = result.get("frame_size", ["?", "?"])
         region = result.get("region", self.config.get("region", []))
         diagnostic = (
