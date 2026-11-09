@@ -123,27 +123,20 @@ def recognize_text(image):
     )[1]
     inverted = cv2.bitwise_not(binary)
 
-    # Fast path: two complementary passes are normally enough for a clear
-    # trade sidebar. Keep the remaining modes as a fallback for difficult
-    # frames so recognition quality is preserved when the text is unclear.
-    fast_variants = [(gray, 6), (binary, 11)]
-    fallback_variants = [(gray, 11), (binary, 6), (inverted, 11)]
+    # Use all complementary passes for stronger recognition of item names
+    # and stack denominations. Accuracy takes priority over scan speed here.
+    variants = [
+        (gray, 6), (gray, 11),
+        (binary, 6), (binary, 11),
+        (inverted, 11)
+    ]
     all_words = []
-
-    for processed, psm in fast_variants:
+    for processed, psm in variants:
         try:
             all_words.extend(_read_variant(processed, psm))
         except Exception:
+            # A failed preprocessing/mode must not discard detections from
+            # the other OCR passes.
             continue
-
-    fast_text = " ".join(word["text"] for word in all_words)
-    has_quantity = bool(re.search(r"(?i)[xх×]\s*\\d{1,6}", fast_text))
-    if len(all_words) < 4 or not has_quantity:
-        for processed, psm in fallback_variants:
-            try:
-                all_words.extend(_read_variant(processed, psm))
-            except Exception:
-                # A failed mode must not discard detections from other passes.
-                continue
 
     return _merge_variant_words(all_words)
