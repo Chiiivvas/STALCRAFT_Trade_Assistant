@@ -474,7 +474,8 @@ class MainWindow(QWidget):
         if self.scan_thread is not None and self.scan_thread.isRunning():
             return
 
-        trade_region = self.config.get("trade_region")\n        self.scan_thread = OCRScanThread(region, trade_region, list(self.prices.keys()), self)
+        trade_region = self.config.get("trade_region")
+        self.scan_thread = OCRScanThread(region, trade_region, list(self.prices.keys()), self)
         self.scan_thread.completed.connect(self.apply_scan_result)
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
