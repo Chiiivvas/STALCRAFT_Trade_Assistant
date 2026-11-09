@@ -90,8 +90,9 @@ def parse_offer_lines(lines, price_names):
             continue
 
         matched_name = _match_price_name(candidate, normalized_names)
-        display_name = matched_name or candidate
-        totals[display_name] = totals.get(display_name, 0) + quantity
+        if matched_name is None:
+            continue
+        totals[matched_name] = totals.get(matched_name, 0) + quantity
     return totals
 
 
@@ -186,7 +187,8 @@ def parse_sidebar_offer_lines(lines, price_names):
             continue
 
         matched_name = _match_price_name(candidate, normalized_names)
-        display_name = matched_name or candidate
-        totals[display_name] = totals.get(display_name, 0) + quantity
+        if matched_name is None:
+            continue
+        totals[matched_name] = totals.get(matched_name, 0) + quantity
 
     return totals
