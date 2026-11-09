@@ -8,7 +8,7 @@ from PIL import Image
 import pytesseract
 from scanner.capture import capture_region
 from scanner.ocr import recognize_text
-from scanner.parser import group_words_into_lines, parse_offer_lines, offer_anchor_seen
+from scanner.parser import group_words_into_lines, parse_sidebar_offer_lines
 
 from PySide6.QtCore import Qt, QRect, QPoint, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
@@ -59,7 +59,7 @@ class RegionSelector(QWidget):
             p.drawRect(r)
         p.setPen(Qt.white)
         p.setFont(QFont("Segoe UI", 14))
-        p.drawText(30, 45, "Выдели область окна обмена мышью. ESC — отмена.")
+        p.drawText(30, 45, "Выдели левый список предметов с количеством xN. ESC — отмена.")
 
     def mousePressEvent(self, e):
         self.origin = e.position().toPoint()
@@ -171,11 +171,10 @@ class OCRScanThread(QThread):
             frame = capture_region(self.region)
             words = recognize_text(frame)
             lines = group_words_into_lines(words)
-            found = parse_offer_lines(lines, self.price_names)
+            found = parse_sidebar_offer_lines(lines, self.price_names)
             self.completed.emit({
                 "found": found,
-                "line_count": len(lines),
-                "anchor_seen": offer_anchor_seen(lines)
+                "line_count": len(lines)
             })
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
@@ -211,7 +210,7 @@ class MainWindow(QWidget):
         root.addLayout(top)
 
         controls = QHBoxLayout()
-        self.region_btn = QPushButton("Выбрать область обмена")
+        self.region_btn = QPushButton("Выбрать левый список")
         self.region_btn.clicked.connect(self.select_region)
         self.pause_btn = QPushButton("Пауза")
         self.pause_btn.clicked.connect(self.toggle_scan)
@@ -261,7 +260,7 @@ class MainWindow(QWidget):
         self.price_table.setMaximumHeight(150)
         root.addWidget(self.price_table)
 
-        self.hint = QLabel("Добавь предметы и цены в прайс-лист. OCR считывает нижнюю часть окна обмена.")
+        self.hint = QLabel("Добавь цены в прайс-лист и выдели левый список, где видны все строки предметов с количеством xN.")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color:#999;font-size:10px;")
         root.addWidget(self.hint)
@@ -332,8 +331,14 @@ class MainWindow(QWidget):
     def set_region(self, region):
         self.config["region"] = region
         save_json(CONFIG_FILE, self.config)
+        self.empty_anchor_scans = 0
+        self._render_results({})
         self.show()
-        self.status.setText("Мониторинг обмена")
+        self.status.setText("Мониторинг левого списка")
+        self.hint.setText(
+            "Считываются строки вида «Название предмета x количество». "
+            "Для расчёта суммы используется цена за штуку из твоего прайс-листа."
+        )
         self.scan()
 
     def toggle_scan(self):
@@ -348,7 +353,7 @@ class MainWindow(QWidget):
 
     def add_template(self):
         if not self.config.get("region"):
-            QMessageBox.information(self, "Сначала выбери область", "Нажми «Выбрать область обмена».")
+            QMessageBox.information(self, "Сначала выбери область", "Нажми «Выбрать левый список».")
             return
         self.hide()
         QTimer.singleShot(350, self.capture_template)
@@ -414,12 +419,11 @@ class MainWindow(QWidget):
     def apply_scan_result(self, result):
         if "error" in result:
             self.hint.setText(
-                f"Временная ошибка OCR (предыдущий результат сохранён): {result['error']}"
+                f"Временная ошибка OCR (последняя сумма сохранена): {result['error']}"
             )
             return
 
         found = result.get("found", {})
-        anchor_seen = result.get("anchor_seen", False)
         if found:
             self.empty_anchor_scans = 0
             self._render_results(found)
@@ -427,36 +431,31 @@ class MainWindow(QWidget):
             unpriced = [name for name, qty, price in self.last_results if price == 0]
             if unpriced:
                 self.hint.setText(
-                    "Без цены в прайс-листе: " + ", ".join(unpriced) +
-                    ". Добавь цену, если хочешь включить их в итог."
+                    "Нет цены в прайс-листе: " + ", ".join(unpriced) +
+                    ". Добавь цену за штуку, чтобы учесть эти предметы в сумме."
                 )
             else:
                 self.hint.setText(
-                    "Распознаны предметы в нижней части обмена. Проверь результат перед сделкой."
+                    "Список распознан. Сумма рассчитана по количеству из левой панели "
+                    "и ценам из прайс-листа."
                 )
             return
 
-        if not anchor_seen:
-            self.status.setText("Ожидание строки «Вы получите»")
-            self.hint.setText(
-                "Последний подтверждённый результат сохранён: строка «Вы получите» "
-                "пока не распознана."
-            )
-            return
-
+        # A successful OCR frame with no xN rows counts as an empty list.
+        # Several consecutive empty frames are required to avoid clearing on one bad read.
         self.empty_anchor_scans += 1
-        if self.empty_anchor_scans >= 3:
+        if self.empty_anchor_scans >= 5:
             self._render_results({})
-            self.status.setText("Предложение пустое")
+            self.status.setText("Список пуст")
             self.hint.setText(
-                "Строка «Вы получите» распознана в трёх последовательных кадрах, "
-                "но предметы с количеством xN не найдены."
+                "В пяти последовательных кадрах строки с количеством xN не найдены. "
+                "Сумма и предыдущий список очищены."
             )
         else:
-            self.status.setText("Проверка предложения…")
+            self.status.setText("Проверка списка…")
             self.hint.setText(
-                f"Предметы пока не распознаны ({self.empty_anchor_scans}/3). "
-                "Предыдущая сумма сохранена до подтверждения пустого предложения."
+                f"Строки предметов пока не распознаны ({self.empty_anchor_scans}/5). "
+                "Предыдущая сумма сохранена до подтверждения пустого списка."
             )
 
     def copy_total(self):
