@@ -199,8 +199,8 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("STALCRAFT Trade Assistant")
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setMinimumSize(360, 420)
-        self.resize(390, 450)
+        self.setMinimumSize(310, 260)
+        self.resize(340, 310)
         self.prices = load_json(PRICES_FILE, {})
         self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
         self.last_results = []
@@ -215,18 +215,21 @@ class MainWindow(QWidget):
 
     def build_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
         top = QHBoxLayout()
         title = QLabel("◈ TRADE ASSISTANT")
-        title.setStyleSheet("font-size:16px;font-weight:700;color:#b8f3d0;")
+        title.setStyleSheet("font-size:13px;font-weight:700;color:#b8f3d0;")
         self.status = QLabel("Ожидание области")
-        self.status.setStyleSheet("color:#d8b66a;")
+        self.status.setStyleSheet("color:#d8b66a;font-size:9px;")
         top.addWidget(title)
         top.addStretch()
         top.addWidget(self.status)
         root.addLayout(top)
 
         controls = QHBoxLayout()
-        self.region_btn = QPushButton("Выбрать левый список")
+        self.region_btn = QPushButton("Выбрать область")
         self.region_btn.clicked.connect(self.select_region)
         self.pause_btn = QPushButton("Пауза")
         self.pause_btn.clicked.connect(self.toggle_scan)
@@ -235,31 +238,42 @@ class MainWindow(QWidget):
         root.addLayout(controls)
 
         self.results = QTableWidget(0, 4)
-        self.results.setHorizontalHeaderLabels(["Предмет", "Кол-во", "Цена/шт.", "Сумма"])
+        self.results.setHorizontalHeaderLabels(["Предмет", "Кол.", "Цена", "Сумма"])
         self.results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in range(1,4):
+        for i in range(1, 4):
             self.results.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        self.results.setMaximumHeight(140)
+        self.results.setMinimumHeight(95)
+        self.results.setMaximumHeight(175)
         root.addWidget(self.results)
 
         totalrow = QHBoxLayout()
-        totalrow.addWidget(QLabel("ИТОГО:"))
+        totalrow.addWidget(QLabel("ИТОГО"))
         self.total = QLabel("0 ₽")
-        self.total.setStyleSheet("font-size:18px;font-weight:800;color:#59d995;")
+        self.total.setStyleSheet("font-size:19px;font-weight:800;color:#59d995;")
         totalrow.addStretch()
         totalrow.addWidget(self.total)
         root.addLayout(totalrow)
 
         self.copy_btn = QPushButton("⧉  СКОПИРОВАТЬ СУММУ")
-        self.copy_btn.setMinimumHeight(34)
-        self.copy_btn.setStyleSheet("background:#237b51;color:white;font-weight:700;padding:8px;border-radius:5px;")
+        self.copy_btn.setMinimumHeight(30)
+        self.copy_btn.setStyleSheet("background:#237b51;color:white;font-weight:700;padding:5px;border-radius:5px;")
         self.copy_btn.clicked.connect(self.copy_total)
         root.addWidget(self.copy_btn)
 
+        self.price_toggle = QPushButton("＋ Прайс-лист и управление")
+        self.price_toggle.setCheckable(True)
+        self.price_toggle.setChecked(False)
+        self.price_toggle.clicked.connect(self.toggle_price_panel)
+        root.addWidget(self.price_toggle)
+
+        self.price_panel = QWidget()
+        price_layout = QVBoxLayout(self.price_panel)
+        price_layout.setContentsMargins(0, 0, 0, 0)
         price_head = QHBoxLayout()
         price_head.addWidget(QLabel("Мой прайс-лист"))
         price_head.addStretch()
-        add_btn = QPushButton("+ Предмет")
+        add_btn = QPushButton("+")
+        add_btn.setToolTip("Добавить предмет")
         add_btn.clicked.connect(self.add_item)
         edit_btn = QPushButton("Изменить")
         edit_btn.clicked.connect(self.edit_item)
@@ -268,25 +282,51 @@ class MainWindow(QWidget):
         price_head.addWidget(add_btn)
         price_head.addWidget(edit_btn)
         price_head.addWidget(del_btn)
-        root.addLayout(price_head)
+        price_layout.addLayout(price_head)
         self.price_table = QTableWidget(0, 2)
         self.price_table.setHorizontalHeaderLabels(["Предмет", "Цена за шт."])
         self.price_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.price_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.price_table.setMaximumHeight(105)
-        root.addWidget(self.price_table)
+        self.price_table.setMaximumHeight(150)
+        price_layout.addWidget(self.price_table)
+        self.price_panel.setVisible(False)
+        root.addWidget(self.price_panel)
 
-        self.hint = QLabel("Добавь цены в прайс-лист и выдели левый список, где видны все строки предметов с количеством xN.")
+        self.diagnostic_toggle = QPushButton("Показать диагностику")
+        self.diagnostic_toggle.setCheckable(True)
+        self.diagnostic_toggle.setChecked(False)
+        self.diagnostic_toggle.clicked.connect(self.toggle_diagnostic_panel)
+        root.addWidget(self.diagnostic_toggle)
+
+        self.diagnostic_panel = QWidget()
+        diagnostic_layout = QVBoxLayout(self.diagnostic_panel)
+        diagnostic_layout.setContentsMargins(0, 0, 0, 0)
+        self.hint = QLabel("Выдели область со строками предметов и количеством xN.")
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color:#999;font-size:10px;")
-        root.addWidget(self.hint)
+        self.hint.setStyleSheet("color:#999;font-size:9px;")
+        diagnostic_layout.addWidget(self.hint)
+        self.diagnostic_panel.setVisible(False)
+        root.addWidget(self.diagnostic_panel)
+
         self.setStyleSheet("""
             QWidget { background:#202328; color:#eeeeee; font-family:'Segoe UI'; font-size:9pt; }
             QTableWidget { background:#17191d; gridline-color:#41454b; }
-            QPushButton { background:#343941; border:1px solid #555b64; padding:6px; border-radius:4px; }
+            QPushButton { background:#343941; border:1px solid #555b64; padding:5px; border-radius:4px; }
             QPushButton:hover { background:#454d57; }
-            QHeaderView::section { background:#30353c; padding:5px; border:0; }
+            QHeaderView::section { background:#30353c; padding:4px; border:0; }
         """)
+
+    def toggle_price_panel(self):
+        visible = self.price_toggle.isChecked()
+        self.price_panel.setVisible(visible)
+        self.price_toggle.setText("－ Скрыть прайс-лист" if visible else "＋ Прайс-лист и управление")
+        self.adjustSize()
+
+    def toggle_diagnostic_panel(self):
+        visible = self.diagnostic_toggle.isChecked()
+        self.diagnostic_panel.setVisible(visible)
+        self.diagnostic_toggle.setText("Скрыть диагностику" if visible else "Показать диагностику")
+        self.adjustSize()
 
     def refresh_price_table(self):
         self.price_table.setRowCount(0)
