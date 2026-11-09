@@ -10,14 +10,14 @@ _WINDOWS_TESSERACT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 if _WINDOWS_TESSERACT.exists():
     pytesseract.pytesseract.tesseract_cmd = str(_WINDOWS_TESSERACT)
 
-OCR_SCALE = 2.0
+OCR_SCALE = 3.0
 
 
 def _read_variant(image, psm):
     data = pytesseract.image_to_data(
         image,
         lang="rus+eng",
-        config=f"--oem 1 --psm {psm}",
+        config=f"--oem 1 --psm {psm} -c preserve_interword_spaces=1",
         output_type=Output.DICT,
         timeout=6
     )
@@ -117,17 +117,27 @@ def recognize_text(image):
         interpolation=cv2.INTER_CUBIC
     )
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    # Keep one soft grayscale pass and create separate contrast/threshold
+    # versions. Game fonts are often small, anti-aliased and low-contrast.
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened = cv2.filter2D(clahe, -1, sharpen_kernel)
     binary = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )[1]
+    adaptive = cv2.adaptiveThreshold(
+        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 31, 11
+    )
     inverted = cv2.bitwise_not(binary)
 
-    # Sparse-text modes help preserve individual sidebar rows when the list
-    # contains many items; raw grayscale adds a less destructive alternative.
+    # Different segmentation modes recover text that a single threshold
+    # misses, especially Cyrillic item names and small stack counters.
     variants = [
         (gray, 6), (gray, 11),
-        (binary, 6), (binary, 11),
+        (clahe, 6), (sharpened, 11),
+        (binary, 6), (adaptive, 11),
         (inverted, 11)
     ]
     all_words = []
