@@ -8,7 +8,7 @@ from PIL import Image
 import pytesseract
 from scanner.capture import capture_region
 from scanner.ocr import recognize_text
-from scanner.parser import group_words_into_lines, parse_offer_lines
+from scanner.parser import group_words_into_lines, parse_offer_lines, offer_anchor_seen
 
 from PySide6.QtCore import Qt, QRect, QPoint, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
@@ -172,7 +172,11 @@ class OCRScanThread(QThread):
             words = recognize_text(frame)
             lines = group_words_into_lines(words)
             found = parse_offer_lines(lines, self.price_names)
-            self.completed.emit({"found": found, "line_count": len(lines)})
+            self.completed.emit({
+                "found": found,
+                "line_count": len(lines),
+                "anchor_seen": offer_anchor_seen(lines)
+            })
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
 
@@ -185,6 +189,7 @@ class MainWindow(QWidget):
         self.prices = load_json(PRICES_FILE, {})
         self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
         self.last_results = []
+        self.empty_anchor_scans = 0
         self.scan_thread = None
         self.build_ui()
         self.timer = QTimer(self)
@@ -328,7 +333,7 @@ class MainWindow(QWidget):
         self.config["region"] = region
         save_json(CONFIG_FILE, self.config)
         self.show()
-        self.status.setText("Область выбрана")
+        self.status.setText("Мониторинг обмена")
         self.scan()
 
     def toggle_scan(self):
@@ -339,7 +344,7 @@ class MainWindow(QWidget):
         else:
             self.timer.start(300)
             self.pause_btn.setText("Пауза")
-            self.status.setText("Сканирование")
+            self.status.setText("Мониторинг обмена")
 
     def add_template(self):
         if not self.config.get("region"):
@@ -384,20 +389,12 @@ class MainWindow(QWidget):
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
         self.scan_thread.start()
-        self.status.setText("Сканирование...")
 
     def on_scan_finished(self):
         # Clear the Python reference before the finished QThread is deleted.
         self.scan_thread = None
 
-    def apply_scan_result(self, result):
-        if "error" in result:
-            self.status.setText("Ошибка OCR")
-            self.hint.setText(f"Ошибка OCR: {result['error']}")
-            return
-
-        found = result.get("found", {})
-        line_count = result.get("line_count", 0)
+    def _render_results(self, found):
         self.last_results = []
         self.results.setRowCount(0)
         grand = 0
@@ -412,17 +409,56 @@ class MainWindow(QWidget):
                       f"{amount:,}".replace(",", " ")]
             for col, value in enumerate(values):
                 self.results.setItem(row, col, QTableWidgetItem(value))
-
         self.total.setText(f"{grand:,}".replace(",", " ") + " ₽")
+
+    def apply_scan_result(self, result):
+        if "error" in result:
+            self.hint.setText(
+                f"Временная ошибка OCR (предыдущий результат сохранён): {result['error']}"
+            )
+            return
+
+        found = result.get("found", {})
+        anchor_seen = result.get("anchor_seen", False)
         if found:
-            self.status.setText(f"OCR: найдено {len(found)}")
-            self.hint.setText("Распознаны предметы в нижней части обмена. Проверь результат перед сделкой.")
-        elif not line_count:
-            self.status.setText("OCR: 0")
-            self.hint.setText("OCR не распознал текст. Проверь область обмена и установку Tesseract.")
+            self.empty_anchor_scans = 0
+            self._render_results(found)
+            self.status.setText(f"Найдено предметов: {len(found)}")
+            unpriced = [name for name, qty, price in self.last_results if price == 0]
+            if unpriced:
+                self.hint.setText(
+                    "Без цены в прайс-листе: " + ", ".join(unpriced) +
+                    ". Добавь цену, если хочешь включить их в итог."
+                )
+            else:
+                self.hint.setText(
+                    "Распознаны предметы в нижней части обмена. Проверь результат перед сделкой."
+                )
+            return
+
+        if not anchor_seen:
+            self.status.setText("Ожидание строки «Вы получите»")
+            self.hint.setText(
+                "Последний подтверждённый результат сохранён: строка «Вы получите» "
+                "пока не распознана."
+            )
+            return
+
+        self.empty_anchor_scans += 1
+        if self.empty_anchor_scans >= 3:
+            self._render_results({})
+            self.status.setText("Предложение пустое")
+            self.hint.setText(
+                "Строка «Вы получите» распознана в трёх последовательных кадрах, "
+                "но предметы с количеством xN не найдены."
+            )
         else:
-            self.status.setText("OCR: 0")
-            self.hint.setText("Не найдены совпадения с прайсом ниже строки «Вы получите». Убедись, что эта строка попала в область.")
+            self.status.setText("Проверка предложения…")
+            self.hint.setText(
+                f"Предметы пока не распознаны ({self.empty_anchor_scans}/3). "
+                "Предыдущая сумма сохранена до подтверждения пустого предложения."
+            )
+
     def copy_total(self):
         QApplication.clipboard().setText(str(sum(q*p for _,q,p in self.last_results)))
         self.status.setText("Сумма скопирована")
