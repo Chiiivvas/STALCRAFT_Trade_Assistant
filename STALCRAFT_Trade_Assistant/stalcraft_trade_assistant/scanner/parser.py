@@ -93,3 +93,34 @@ def parse_offer_lines(lines, price_names):
         display_name = matched_name or candidate
         totals[display_name] = totals.get(display_name, 0) + quantity
     return totals
+
+def parse_sidebar_offer_lines(lines, price_names):
+    """Parse every explicit 'item name x quantity' row in the full trade sidebar."""
+    normalized_names = [
+        (normalize_text(name), name)
+        for name in price_names if normalize_text(name)
+    ]
+    totals = {}
+
+    for line in lines:
+        text = line.get("text", "")
+        quantity_match = _QUANTITY_RE.search(text)
+        if not quantity_match:
+            continue
+
+        quantity = int(quantity_match.group(1))
+        if quantity < 1:
+            continue
+
+        candidate = _QUANTITY_RE.sub("", text)
+        candidate = re.sub(r"[|丨Il]{2,}", " ", candidate)
+        candidate = " ".join(candidate.split()).strip(" -:|")
+        if not normalize_text(candidate):
+            continue
+
+        matched_name = _match_price_name(candidate, normalized_names)
+        display_name = matched_name or candidate
+        totals[display_name] = totals.get(display_name, 0) + quantity
+
+    return totals
+
