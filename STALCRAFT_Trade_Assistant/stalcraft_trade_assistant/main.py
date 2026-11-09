@@ -216,6 +216,7 @@ class MainWindow(QWidget):
         self.config = load_json(CONFIG_FILE, {"region": None, "trade_region": None, "scan_interval": 1.2})
         self.last_results = []
         self.empty_anchor_scans = 0
+        self.scan_generation = 0
         self.scan_thread = None
         self.scan_counter = 0
         self.last_left_verification = {}
@@ -246,8 +247,12 @@ class MainWindow(QWidget):
         self.region_btn.clicked.connect(self.select_region)
         self.pause_btn = QPushButton("Пауза")
         self.pause_btn.clicked.connect(self.toggle_scan)
+        self.reset_btn = QPushButton("Сбросить трейд")
+        self.reset_btn.setToolTip("Очистить предметы и сумму текущего трейда")
+        self.reset_btn.clicked.connect(self.reset_trade)
         controls.addWidget(self.region_btn)
         controls.addWidget(self.pause_btn)
+        controls.addWidget(self.reset_btn)
         root.addLayout(controls)
         self.trade_region_btn = QPushButton("Выбрать область трейда (правая)")
         self.trade_region_btn.clicked.connect(self.select_trade_region)
@@ -485,14 +490,27 @@ class MainWindow(QWidget):
         # Verify the left list occasionally; the right trade panel remains
         # the fast, authoritative source on every scan.
         verify_left = (not trade_region or not self.last_left_verification or self.scan_counter % 8 == 1)
+        generation = self.scan_generation
         self.scan_thread = OCRScanThread(
             region, trade_region, list(self.prices.keys()),
             verify_left=verify_left, parent=self
         )
-        self.scan_thread.completed.connect(self.apply_scan_result)
+        self.scan_thread.completed.connect(
+            lambda result, token=generation: self.apply_scan_result(result)
+            if token == self.scan_generation else None
+        )
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
         self.scan_thread.start()
+
+    def reset_trade(self):
+        # Ignore any OCR result that was started before the manual reset.
+        self.scan_generation += 1
+        self.empty_anchor_scans = 0
+        self.last_left_verification = {}
+        self._render_results({})
+        self.status.setText("Трейд сброшен — ожидание нового")
+        self.hint.setText("Текущий список и сумма очищены. Следующий трейд будет распознан автоматически.")
 
     def on_scan_finished(self):
         # Clear the Python reference before the finished QThread is deleted.
