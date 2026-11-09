@@ -1,40 +1,26 @@
+import re
+from pathlib import Path
+
 import cv2
 import pytesseract
 from pytesseract import Output
-from pathlib import Path
 
 # Common Windows install location. Tesseract does not need to be in PATH.
 _WINDOWS_TESSERACT = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 if _WINDOWS_TESSERACT.exists():
     pytesseract.pytesseract.tesseract_cmd = str(_WINDOWS_TESSERACT)
 
-# 1.5x keeps small game UI text readable while processing ~44% fewer pixels
-# than the previous 2x upscale.
-OCR_SCALE = 1.5
-OCR_CONFIG = "--oem 1 --psm 6"
+OCR_SCALE = 2.0
 
 
-def recognize_text(image):
-    if image is None or image.size == 0:
-        return []
-
-    scaled = cv2.resize(
-        image, None, fx=OCR_SCALE, fy=OCR_SCALE,
-        interpolation=cv2.INTER_LINEAR
-    )
-    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-    processed = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )[1]
-
+def _read_variant(image, psm):
     data = pytesseract.image_to_data(
-        processed,
+        image,
         lang="rus+eng",
-        config=OCR_CONFIG,
+        config=f"--oem 1 --psm {psm}",
         output_type=Output.DICT,
-        timeout=4
+        timeout=5
     )
-
     words = []
     for i, raw_text in enumerate(data["text"]):
         text = raw_text.strip()
@@ -44,7 +30,10 @@ def recognize_text(image):
             confidence = float(data["conf"][i])
         except (ValueError, TypeError):
             confidence = -1
-        if confidence < 20:
+
+        # Keep weak-confidence tokens too: the small x / х before a stack
+        # count is often assigned a low confidence by Tesseract.
+        if confidence < 0:
             continue
 
         words.append({
@@ -61,3 +50,52 @@ def recognize_text(image):
             )
         })
     return words
+
+
+def _quality_score(words):
+    if not words:
+        return 0
+    text = " ".join(word["text"] for word in words)
+    confidence = sum(max(0, word["confidence"]) for word in words) / len(words)
+    has_stack = bool(re.search(r"(?i)[xх×]\s*\d{1,6}", text))
+    cyrillic_count = len(re.findall(r"[а-яА-ЯёЁ]", text))
+    # Favor variants that actually preserve item names and xN stack counts.
+    return len(words) * 1.5 + confidence / 20 + cyrillic_count * 0.15 + (20 if has_stack else 0)
+
+
+def recognize_text(image):
+    if image is None or image.size == 0:
+        return []
+
+    scaled = cv2.resize(
+        image, None, fx=OCR_SCALE, fy=OCR_SCALE,
+        interpolation=cv2.INTER_CUBIC
+    )
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    binary = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )[1]
+    inverted = cv2.bitwise_not(binary)
+
+    # Sidebar rows are sparse, so PSM 11 complements the regular block mode.
+    # Try both polarities because the game panel may use light or dark text.
+    variants = [
+        (binary, 6),
+        (binary, 11),
+        (inverted, 6),
+        (inverted, 11)
+    ]
+    best_words = []
+    best_score = -1
+    for processed, psm in variants:
+        try:
+            words = _read_variant(processed, psm)
+        except Exception:
+            continue
+        score = _quality_score(words)
+        if score > best_score:
+            best_words = words
+            best_score = score
+
+    return best_words
