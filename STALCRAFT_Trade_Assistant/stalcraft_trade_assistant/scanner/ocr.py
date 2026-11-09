@@ -108,7 +108,7 @@ def _merge_variant_words(all_words):
     return sorted(merged, key=lambda item: (item["y"], item["x"]))
 
 
-def recognize_text(image):
+def recognize_text(image, fast=False):
     if image is None or image.size == 0:
         return []
 
@@ -123,13 +123,15 @@ def recognize_text(image):
     )[1]
     inverted = cv2.bitwise_not(binary)
 
-    # Sparse-text modes help preserve individual sidebar rows when the list
-    # contains many items; raw grayscale adds a less destructive alternative.
-    variants = [
-        (gray, 6), (gray, 11),
-        (binary, 6), (binary, 11),
-        (inverted, 11)
-    ]
+    # Use all complementary passes for stronger recognition of item names
+    # and stack denominations. Accuracy takes priority over scan speed here.
+    variants = (
+        [(gray, 6)] if fast else [
+            (gray, 6), (gray, 11),
+            (binary, 6), (binary, 11),
+            (inverted, 11)
+        ]
+    )
     all_words = []
     for processed, psm in variants:
         try:

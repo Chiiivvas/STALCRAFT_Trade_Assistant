@@ -59,7 +59,7 @@ class RegionSelector(QWidget):
             p.drawRect(r)
         p.setPen(Qt.white)
         p.setFont(QFont("Segoe UI", 14))
-        p.drawText(30, 45, "Выдели левый список предметов с количеством xN. ESC — отмена.")
+        p.drawText(30, 45, "Выдели нужную область окна трейда. ESC — отмена.")
 
     def mousePressEvent(self, e):
         self.origin = e.position().toPoint()
@@ -169,42 +169,56 @@ class ItemDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+def normalize_name_for_compare(value):
+    return re.sub(r"[^а-яa-z0-9]+", "", str(value).lower().replace("ё", "е"))
+
+
 class OCRScanThread(QThread):
     completed = Signal(object)
 
-    def __init__(self, region, price_names, parent=None):
+    def __init__(self, region, trade_region, price_names, verify_left=True, parent=None):
         super().__init__(parent)
         self.region = list(region)
+        self.trade_region = list(trade_region) if trade_region else None
         self.price_names = list(price_names)
+        self.verify_left = verify_left
+
+    def _scan_one(self, region, fast=False):
+        frame = capture_region(region)
+        words = recognize_text(frame, fast=fast)
+        lines = group_words_into_lines(words)
+        return {
+            "found": parse_sidebar_offer_lines(lines, self.price_names),
+            "line_count": len(lines),
+            "word_count": len(words),
+            "ocr_text": "\n".join(line["text"] for line in lines),
+            "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
+            "region": region
+        }
 
     def run(self):
         try:
-            frame = capture_region(self.region)
-            words = recognize_text(frame)
-            lines = group_words_into_lines(words)
-            found = parse_sidebar_offer_lines(lines, self.price_names)
-            self.completed.emit({
-                "found": found,
-                "line_count": len(lines),
-                "word_count": len(words),
-                "ocr_text": "\n".join(line["text"] for line in lines),
-                "frame_size": [int(frame.shape[1]), int(frame.shape[0])],
-                "region": self.region
-            })
+            left = self._scan_one(self.region, fast=True) if self.verify_left else None
+            right = self._scan_one(self.trade_region) if self.trade_region else None
+            self.completed.emit({"left": left, "right": right})
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
+
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("STALCRAFT Trade Assistant")
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(390)
+        self.setMinimumSize(310, 260)
+        self.resize(340, 310)
         self.prices = load_json(PRICES_FILE, {})
-        self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
+        self.config = load_json(CONFIG_FILE, {"region": None, "trade_region": None, "scan_interval": 1.2})
         self.last_results = []
         self.empty_anchor_scans = 0
         self.scan_thread = None
+        self.scan_counter = 0
+        self.last_left_verification = {}
         self.build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.scan)
@@ -214,51 +228,68 @@ class MainWindow(QWidget):
 
     def build_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
         top = QHBoxLayout()
         title = QLabel("◈ TRADE ASSISTANT")
-        title.setStyleSheet("font-size:16px;font-weight:700;color:#b8f3d0;")
+        title.setStyleSheet("font-size:13px;font-weight:700;color:#b8f3d0;")
         self.status = QLabel("Ожидание области")
-        self.status.setStyleSheet("color:#d8b66a;")
+        self.status.setStyleSheet("color:#d8b66a;font-size:9px;")
         top.addWidget(title)
         top.addStretch()
         top.addWidget(self.status)
         root.addLayout(top)
 
         controls = QHBoxLayout()
-        self.region_btn = QPushButton("Выбрать левый список")
+        self.region_btn = QPushButton("Выбрать область")
         self.region_btn.clicked.connect(self.select_region)
         self.pause_btn = QPushButton("Пауза")
         self.pause_btn.clicked.connect(self.toggle_scan)
         controls.addWidget(self.region_btn)
         controls.addWidget(self.pause_btn)
         root.addLayout(controls)
+        self.trade_region_btn = QPushButton("Выбрать область трейда (правая)")
+        self.trade_region_btn.clicked.connect(self.select_trade_region)
+        root.addWidget(self.trade_region_btn)
 
         self.results = QTableWidget(0, 4)
-        self.results.setHorizontalHeaderLabels(["Предмет", "Кол-во", "Цена/шт.", "Сумма"])
+        self.results.setHorizontalHeaderLabels(["Предмет", "Кол.", "Цена", "Сумма"])
         self.results.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in range(1,4):
+        for i in range(1, 4):
             self.results.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        self.results.setMaximumHeight(190)
+        self.results.setMinimumHeight(95)
+        self.results.setMaximumHeight(175)
         root.addWidget(self.results)
 
         totalrow = QHBoxLayout()
-        totalrow.addWidget(QLabel("ИТОГО:"))
+        totalrow.addWidget(QLabel("ИТОГО"))
         self.total = QLabel("0 ₽")
-        self.total.setStyleSheet("font-size:23px;font-weight:800;color:#59d995;")
+        self.total.setStyleSheet("font-size:19px;font-weight:800;color:#59d995;")
         totalrow.addStretch()
         totalrow.addWidget(self.total)
         root.addLayout(totalrow)
 
         self.copy_btn = QPushButton("⧉  СКОПИРОВАТЬ СУММУ")
-        self.copy_btn.setMinimumHeight(42)
-        self.copy_btn.setStyleSheet("background:#237b51;color:white;font-weight:700;padding:8px;border-radius:5px;")
+        self.copy_btn.setMinimumHeight(30)
+        self.copy_btn.setStyleSheet("background:#237b51;color:white;font-weight:700;padding:5px;border-radius:5px;")
         self.copy_btn.clicked.connect(self.copy_total)
         root.addWidget(self.copy_btn)
 
+        self.price_toggle = QPushButton("＋ Прайс-лист и управление")
+        self.price_toggle.setCheckable(True)
+        self.price_toggle.setChecked(False)
+        self.price_toggle.clicked.connect(self.toggle_price_panel)
+        root.addWidget(self.price_toggle)
+
+        self.price_panel = QWidget()
+        price_layout = QVBoxLayout(self.price_panel)
+        price_layout.setContentsMargins(0, 0, 0, 0)
         price_head = QHBoxLayout()
         price_head.addWidget(QLabel("Мой прайс-лист"))
         price_head.addStretch()
-        add_btn = QPushButton("+ Предмет")
+        add_btn = QPushButton("+")
+        add_btn.setToolTip("Добавить предмет")
         add_btn.clicked.connect(self.add_item)
         edit_btn = QPushButton("Изменить")
         edit_btn.clicked.connect(self.edit_item)
@@ -267,25 +298,51 @@ class MainWindow(QWidget):
         price_head.addWidget(add_btn)
         price_head.addWidget(edit_btn)
         price_head.addWidget(del_btn)
-        root.addLayout(price_head)
+        price_layout.addLayout(price_head)
         self.price_table = QTableWidget(0, 2)
         self.price_table.setHorizontalHeaderLabels(["Предмет", "Цена за шт."])
         self.price_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.price_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.price_table.setMaximumHeight(150)
-        root.addWidget(self.price_table)
+        price_layout.addWidget(self.price_table)
+        self.price_panel.setVisible(False)
+        root.addWidget(self.price_panel)
 
-        self.hint = QLabel("Добавь цены в прайс-лист и выдели левый список, где видны все строки предметов с количеством xN.")
+        self.diagnostic_toggle = QPushButton("Показать диагностику")
+        self.diagnostic_toggle.setCheckable(True)
+        self.diagnostic_toggle.setChecked(False)
+        self.diagnostic_toggle.clicked.connect(self.toggle_diagnostic_panel)
+        root.addWidget(self.diagnostic_toggle)
+
+        self.diagnostic_panel = QWidget()
+        diagnostic_layout = QVBoxLayout(self.diagnostic_panel)
+        diagnostic_layout.setContentsMargins(0, 0, 0, 0)
+        self.hint = QLabel("Выдели область со строками предметов и количеством xN.")
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color:#999;font-size:10px;")
-        root.addWidget(self.hint)
+        self.hint.setStyleSheet("color:#999;font-size:9px;")
+        diagnostic_layout.addWidget(self.hint)
+        self.diagnostic_panel.setVisible(False)
+        root.addWidget(self.diagnostic_panel)
+
         self.setStyleSheet("""
-            QWidget { background:#202328; color:#eeeeee; font-family:'Segoe UI'; }
+            QWidget { background:#202328; color:#eeeeee; font-family:'Segoe UI'; font-size:9pt; }
             QTableWidget { background:#17191d; gridline-color:#41454b; }
-            QPushButton { background:#343941; border:1px solid #555b64; padding:6px; border-radius:4px; }
+            QPushButton { background:#343941; border:1px solid #555b64; padding:5px; border-radius:4px; }
             QPushButton:hover { background:#454d57; }
-            QHeaderView::section { background:#30353c; padding:5px; border:0; }
+            QHeaderView::section { background:#30353c; padding:4px; border:0; }
         """)
+
+    def toggle_price_panel(self):
+        visible = self.price_toggle.isChecked()
+        self.price_panel.setVisible(visible)
+        self.price_toggle.setText("－ Скрыть прайс-лист" if visible else "＋ Прайс-лист и управление")
+        self.adjustSize()
+
+    def toggle_diagnostic_panel(self):
+        visible = self.diagnostic_toggle.isChecked()
+        self.diagnostic_panel.setVisible(visible)
+        self.diagnostic_toggle.setText("Скрыть диагностику" if visible else "Показать диагностику")
+        self.adjustSize()
 
     def refresh_price_table(self):
         self.price_table.setRowCount(0)
@@ -342,6 +399,24 @@ class MainWindow(QWidget):
 
     def show_region_selector(self):
         self.region_selector = RegionSelector(self.set_region)
+
+    def select_trade_region(self):
+        self.hide()
+        QTimer.singleShot(350, self.show_trade_region_selector)
+
+    def show_trade_region_selector(self):
+        self.region_selector = RegionSelector(self.set_trade_region)
+
+    def set_trade_region(self, region):
+        self.config["trade_region"] = region
+        save_json(CONFIG_FILE, self.config)
+        self.show()
+        self.status.setText("Правая область трейда сохранена")
+        self.hint.setText(
+            "Правая область сохранена. Теперь программа сверяет названия "
+            "с левой областью, а количество берёт из правой области трейда."
+        )
+        self.scan()
 
     def set_region(self, region):
         self.config["region"] = region
@@ -405,7 +480,15 @@ class MainWindow(QWidget):
         if self.scan_thread is not None and self.scan_thread.isRunning():
             return
 
-        self.scan_thread = OCRScanThread(region, list(self.prices.keys()), self)
+        trade_region = self.config.get("trade_region")
+        self.scan_counter += 1
+        # Verify the left list occasionally; the right trade panel remains
+        # the fast, authoritative source on every scan.
+        verify_left = (not trade_region or not self.last_left_verification or self.scan_counter % 8 == 1)
+        self.scan_thread = OCRScanThread(
+            region, trade_region, list(self.prices.keys()),
+            verify_left=verify_left, parent=self
+        )
         self.scan_thread.completed.connect(self.apply_scan_result)
         self.scan_thread.finished.connect(self.on_scan_finished)
         self.scan_thread.finished.connect(self.scan_thread.deleteLater)
@@ -439,17 +522,50 @@ class MainWindow(QWidget):
             )
             return
 
-        found = result.get("found", {})
+        left = result.get("left")
+        right = result.get("right")
+        if left is not None:
+            self.last_left_verification = left
+        left = left or self.last_left_verification or {}
+        left_found = left.get("found", {})
+        right_found = right.get("found", {}) if right else {}
+
+        # Right trade area is authoritative for offered quantities. The left
+        # list verifies names only; its quantities are never added a second time.
+        if right is not None and right.get("word_count", 0) > 0:
+            found = {}
+            matched_count = 0
+            for right_name, qty in right_found.items():
+                verified_name = right_name
+                for left_name in left_found:
+                    if normalize_name_for_compare(left_name) == normalize_name_for_compare(right_name):
+                        verified_name = left_name
+                        matched_count += 1
+                        break
+                found[verified_name] = qty
+            active = right
+            compare_note = (
+                f"Сверка названий: совпало {matched_count} из {len(right_found)}; "
+                "количество берётся только из правой области, дубли не суммируются. "
+            )
+        else:
+            found = left_found
+            active = left
+            compare_note = (
+                "Правая область не прочиталась — временно использую левый список. "
+                if right is not None else "Правая область трейда ещё не выбрана. "
+            )
+
         raw_text = " | ".join(
-            part.strip() for part in result.get("ocr_text", "").splitlines()
+            part.strip() for part in active.get("ocr_text", "").splitlines()
             if part.strip()
         )
         raw_preview = raw_text[:650] if raw_text else "текст не распознан"
-        frame_size = result.get("frame_size", ["?", "?"])
-        region = result.get("region", self.config.get("region", []))
+        frame_size = active.get("frame_size", ["?", "?"])
+        region = active.get("region", self.config.get("region", []))
         diagnostic = (
             f"Захват {frame_size[0]}×{frame_size[1]} px; "
-            f"слов OCR: {result.get('word_count', 0)}; область: {region}. "
+            f"слов OCR: {active.get('word_count', 0)}; область: {region}. "
         )
 
         if found:
@@ -459,14 +575,14 @@ class MainWindow(QWidget):
             unpriced = [name for name, qty, price in self.last_results if price == 0]
             if unpriced:
                 self.hint.setText(
-                    diagnostic + "Нет цены в прайс-листе: " + ", ".join(unpriced) +
+                    diagnostic + compare_note + "Нет цены в прайс-листе: " + ", ".join(unpriced) +
                     ". Добавь цену за штуку, чтобы учесть эти предметы в сумме. "
                     f"OCR: {raw_preview}"
                 )
             else:
                 self.hint.setText(
-                    diagnostic + "Список распознан. Сумма рассчитана по количеству "
-                    "из левой панели и ценам из прайс-листа. "
+                    diagnostic + compare_note + "Список распознан. Сумма рассчитана по количеству "
+                    "из правой области трейда и ценам из прайс-листа. "
                     f"OCR: {raw_preview}"
                 )
             return
