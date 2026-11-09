@@ -10,7 +10,7 @@ from scanner.capture import capture_region
 from scanner.ocr import recognize_text
 from scanner.parser import group_words_into_lines, parse_offer_lines
 
-from PySide6.QtCore import Qt, QRect, QPoint, QTimer
+from PySide6.QtCore import Qt, QRect, QPoint, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
@@ -158,6 +158,24 @@ class ItemDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+class OCRScanThread(QThread):
+    completed = Signal(object)
+
+    def __init__(self, region, price_names, parent=None):
+        super().__init__(parent)
+        self.region = list(region)
+        self.price_names = list(price_names)
+
+    def run(self):
+        try:
+            frame = capture_region(self.region)
+            words = recognize_text(frame)
+            lines = group_words_into_lines(words)
+            found = parse_offer_lines(lines, self.price_names)
+            self.completed.emit({"found": found, "line_count": len(lines)})
+        except Exception as exc:
+            self.completed.emit({"error": str(exc)})
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -167,10 +185,12 @@ class MainWindow(QWidget):
         self.prices = load_json(PRICES_FILE, {})
         self.config = load_json(CONFIG_FILE, {"region": None, "scan_interval": 1.2})
         self.last_results = []
+        self.scan_thread = None
         self.build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.scan)
-        self.timer.start(1200)
+        # Poll frequently; skip a tick while the previous OCR job is running.
+        self.timer.start(500)
         self.refresh_price_table()
 
     def build_ui(self):
@@ -354,41 +374,50 @@ class MainWindow(QWidget):
         region = self.config.get("region")
         if not region:
             return
-        try:
-            frame = capture_region(region)
-            words = recognize_text(frame)
-            lines = group_words_into_lines(words)
-            found = parse_offer_lines(lines, list(self.prices.keys()))
 
-            self.last_results = []
-            self.results.setRowCount(0)
-            grand = 0
-            for name, qty in found.items():
-                price = int(self.prices.get(name, 0))
-                amount = qty * price
-                grand += amount
-                self.last_results.append((name, qty, price))
-                row = self.results.rowCount()
-                self.results.insertRow(row)
-                values = [name, str(qty), f"{price:,}".replace(",", " "),
-                          f"{amount:,}".replace(",", " ")]
-                for col, value in enumerate(values):
-                    self.results.setItem(row, col, QTableWidgetItem(value))
+        # Never queue OCR jobs: keep at most one scan active at a time.
+        if self.scan_thread is not None and self.scan_thread.isRunning():
+            return
 
-            self.total.setText(f"{grand:,}".replace(",", " ") + " ₽")
-            if found:
-                self.status.setText(f"OCR: найдено {len(found)}")
-                self.hint.setText("Распознаны предметы в нижней части обмена. Проверь результат перед сделкой.")
-            elif not lines:
-                self.status.setText("OCR: 0")
-                self.hint.setText("OCR не распознал текст. Проверь область обмена и установку Tesseract.")
-            else:
-                self.status.setText("OCR: 0")
-                self.hint.setText("Не найдены совпадения с прайсом ниже строки «Вы получите». Убедись, что эта строка попала в область.")
-        except Exception as e:
+        self.scan_thread = OCRScanThread(region, list(self.prices.keys()), self)
+        self.scan_thread.completed.connect(self.apply_scan_result)
+        self.scan_thread.finished.connect(self.scan_thread.deleteLater)
+        self.scan_thread.start()
+        self.status.setText("Сканирование...")
+
+    def apply_scan_result(self, result):
+        if "error" in result:
             self.status.setText("Ошибка OCR")
-            self.hint.setText(f"Ошибка OCR: {e}")
+            self.hint.setText(f"Ошибка OCR: {result['error']}")
+            return
 
+        found = result.get("found", {})
+        line_count = result.get("line_count", 0)
+        self.last_results = []
+        self.results.setRowCount(0)
+        grand = 0
+        for name, qty in found.items():
+            price = int(self.prices.get(name, 0))
+            amount = qty * price
+            grand += amount
+            self.last_results.append((name, qty, price))
+            row = self.results.rowCount()
+            self.results.insertRow(row)
+            values = [name, str(qty), f"{price:,}".replace(",", " "),
+                      f"{amount:,}".replace(",", " ")]
+            for col, value in enumerate(values):
+                self.results.setItem(row, col, QTableWidgetItem(value))
+
+        self.total.setText(f"{grand:,}".replace(",", " ") + " ₽")
+        if found:
+            self.status.setText(f"OCR: найдено {len(found)}")
+            self.hint.setText("Распознаны предметы в нижней части обмена. Проверь результат перед сделкой.")
+        elif not line_count:
+            self.status.setText("OCR: 0")
+            self.hint.setText("OCR не распознал текст. Проверь область обмена и установку Tesseract.")
+        else:
+            self.status.setText("OCR: 0")
+            self.hint.setText("Не найдены совпадения с прайсом ниже строки «Вы получите». Убедись, что эта строка попала в область.")
     def copy_total(self):
         QApplication.clipboard().setText(str(sum(q*p for _,q,p in self.last_results)))
         self.status.setText("Сумма скопирована")
