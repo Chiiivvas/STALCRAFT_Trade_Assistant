@@ -199,7 +199,7 @@ class OCRScanThread(QThread):
     def run(self):
         try:
             left = self._scan_one(self.region, fast=True) if self.verify_left else None
-            right = self._scan_one(self.trade_region) if self.trade_region else None
+            right = self._scan_one(self.trade_region, fast=True) if self.trade_region else None
             self.completed.emit({"left": left, "right": right})
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
@@ -530,9 +530,9 @@ class MainWindow(QWidget):
         left_found = left.get("found", {})
         right_found = right.get("found", {}) if right else {}
 
-        # Right trade area is authoritative for offered quantities. The left
-        # list verifies names only; its quantities are never added a second time.
-        if right is not None and right.get("word_count", 0) > 0:
+        # When a trade region is configured, it is the sole source of active
+        # offers. Never resurrect stale items from the left sidebar after trade closes.
+        if right is not None:
             found = {}
             matched_count = 0
             for right_name, qty in right_found.items():
@@ -551,10 +551,7 @@ class MainWindow(QWidget):
         else:
             found = left_found
             active = left
-            compare_note = (
-                "Правая область не прочиталась — временно использую левый список. "
-                if right is not None else "Правая область трейда ещё не выбрана. "
-            )
+            compare_note = "Правая область трейда ещё не выбрана. "
 
         raw_text = " | ".join(
             part.strip() for part in active.get("ocr_text", "").splitlines()
@@ -590,7 +587,7 @@ class MainWindow(QWidget):
         # A successful OCR frame with no xN rows counts as an empty list.
         # Several consecutive empty frames are required to avoid clearing on one bad read.
         self.empty_anchor_scans += 1
-        if self.empty_anchor_scans >= 5:
+        if self.empty_anchor_scans >= 2:
             self._render_results({})
             self.status.setText("Список не распознан")
         else:
@@ -598,7 +595,7 @@ class MainWindow(QWidget):
 
         self.hint.setText(
             diagnostic +
-            f"Строки с xN не найдены ({min(self.empty_anchor_scans, 5)}/5). "
+            f"Строки с xN не найдены ({min(self.empty_anchor_scans, 2)}/2). "
             f"Что OCR прочитал: {raw_preview}"
         )
 
