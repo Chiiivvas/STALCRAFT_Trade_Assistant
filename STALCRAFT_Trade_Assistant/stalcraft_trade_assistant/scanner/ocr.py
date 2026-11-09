@@ -13,7 +13,7 @@ if _WINDOWS_TESSERACT.exists():
 OCR_SCALE = 2.0
 
 
-def _read_variant(image, psm):
+def _read_variant(image, psm, scale=OCR_SCALE):
     data = pytesseract.image_to_data(
         image,
         lang="rus+eng",
@@ -38,10 +38,10 @@ def _read_variant(image, psm):
         words.append({
             "text": text,
             "confidence": confidence,
-            "x": round(data["left"][i] / OCR_SCALE),
-            "y": round(data["top"][i] / OCR_SCALE),
-            "width": max(1, round(data["width"][i] / OCR_SCALE)),
-            "height": max(1, round(data["height"][i] / OCR_SCALE)),
+            "x": round(data["left"][i] / scale),
+            "y": round(data["top"][i] / scale),
+            "width": max(1, round(data["width"][i] / scale)),
+            "height": max(1, round(data["height"][i] / scale)),
             "line": (
                 data["block_num"][i],
                 data["par_num"][i],
@@ -112,33 +112,34 @@ def recognize_text(image, fast=False):
     if image is None or image.size == 0:
         return []
 
+    # Fast mode is used for the live trade panel: one OCR pass only.
+    # Smaller scaling and no blur/threshold variants cut the work substantially.
+    scale = 1.5 if fast else OCR_SCALE
     scaled = cv2.resize(
-        image, None, fx=OCR_SCALE, fy=OCR_SCALE,
-        interpolation=cv2.INTER_CUBIC
+        image, None, fx=scale, fy=scale,
+        interpolation=cv2.INTER_LINEAR if fast else cv2.INTER_CUBIC
     )
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+
+    if fast:
+        try:
+            return _read_variant(gray, 6, scale=scale)
+        except Exception:
+            return []
+
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     binary = cv2.threshold(
         gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )[1]
     inverted = cv2.bitwise_not(binary)
-
-    # Use all complementary passes for stronger recognition of item names
-    # and stack denominations. Accuracy takes priority over scan speed here.
-    variants = (
-        [(gray, 6), (binary, 6)] if fast else [
-            (gray, 6), (gray, 11),
-            (binary, 6), (binary, 11),
-            (inverted, 11)
-        ]
-    )
     all_words = []
-    for processed, psm in variants:
+    for processed, psm in [
+        (gray, 6), (gray, 11),
+        (binary, 6), (binary, 11),
+        (inverted, 11)
+    ]:
         try:
-            all_words.extend(_read_variant(processed, psm))
+            all_words.extend(_read_variant(processed, psm, scale=scale))
         except Exception:
-            # A failed preprocessing/mode must not discard detections from
-            # the other OCR passes.
             continue
-
     return _merge_variant_words(all_words)
