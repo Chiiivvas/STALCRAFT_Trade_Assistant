@@ -521,17 +521,19 @@ class MainWindow(QWidget):
         # list verifies names only; its quantities are never added a second time.
         if right is not None and right.get("word_count", 0) > 0:
             found = {}
+            matched_count = 0
             for right_name, qty in right_found.items():
                 verified_name = right_name
                 for left_name in left_found:
                     if normalize_name_for_compare(left_name) == normalize_name_for_compare(right_name):
                         verified_name = left_name
+                        matched_count += 1
                         break
                 found[verified_name] = qty
             active = right
             compare_note = (
-                f"Сверка: слева {len(left_found)} поз., в трейде {len(right_found)} поз.; "
-                "количество взято из правой области без сложения дублей. "
+                f"Сверка названий: совпало {matched_count} из {len(right_found)}; "
+                "количество берётся только из правой области, дубли не суммируются. "
             )
         else:
             found = left_found
@@ -560,7 +562,7 @@ class MainWindow(QWidget):
             unpriced = [name for name, qty, price in self.last_results if price == 0]
             if unpriced:
                 self.hint.setText(
-                    diagnostic + "Нет цены в прайс-листе: " + ", ".join(unpriced) +
+                    diagnostic + compare_note + "Нет цены в прайс-листе: " + ", ".join(unpriced) +
                     ". Добавь цену за штуку, чтобы учесть эти предметы в сумме. "
                     f"OCR: {raw_preview}"
                 )
