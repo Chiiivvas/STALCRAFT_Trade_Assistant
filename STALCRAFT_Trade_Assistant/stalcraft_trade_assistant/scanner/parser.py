@@ -1,5 +1,4 @@
 import re
-from difflib import SequenceMatcher
 
 _QUANTITY_RE = re.compile(r"(?i)[xх×]\s*[:=.,-]?\s*(\d{1,6})")
 
@@ -39,26 +38,26 @@ def _match_price_name(candidate, normalized_names):
     normalized_candidate = normalize_text(candidate)
     if not normalized_candidate:
         return None
-    # Exact normalized matches first; then contained names.
-    for normalized_name, original_name in normalized_names:
-        if normalized_name == normalized_candidate:
-            return original_name
-    for normalized_name, original_name in sorted(
-        normalized_names, key=lambda pair: len(pair[0]), reverse=True
-    ):
-        if normalized_name and (
-            normalized_name in normalized_candidate
-            or normalized_candidate in normalized_name
-        ):
-            return original_name
-    best_name = None
-    best_score = 0.0
-    for normalized_name, original_name in normalized_names:
-        score = SequenceMatcher(None, normalized_candidate, normalized_name).ratio()
-        if score > best_score:
-            best_score = score
-            best_name = original_name
-    return best_name if best_score >= 0.90 else None
+    # Never guess an item name from a merely similar OCR string.
+    # False positives corrupt totals, so accept only unambiguous matches.
+    exact = [original for normalized, original in normalized_names
+             if normalized == normalized_candidate]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+
+    contained = [(normalized, original) for normalized, original in normalized_names
+                 if len(normalized) >= 5 and
+                 (normalized in normalized_candidate or normalized_candidate in normalized)]
+    if not contained:
+        return None
+    contained.sort(key=lambda pair: len(pair[0]), reverse=True)
+    if len(contained) > 1:
+        first, second = contained[0][0], contained[1][0]
+        if len(first) == len(second) or first in second:
+            return None
+    return contained[0][1]
 
 
 def parse_offer_lines(lines, price_names):
